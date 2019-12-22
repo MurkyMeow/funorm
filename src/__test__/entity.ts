@@ -1,20 +1,28 @@
 import * as funorm from '../main'
+import { env } from './env'
 
-const withUser = funorm.entity('user', {
+const User = {
   id: funorm.primary(),
   name: funorm.column('string'),
   email: funorm.column('string', { nullable: true }),
-})
+}
 
-const withProduct = funorm.entity('product', {
+const Product = {
   id: funorm.primary(),
   cost: funorm.column('int'),
   name: funorm.column('string'),
-})
+}
 
-const database =
-  withUser(
-  withProduct(
-    funorm.connect()))
+const options = {
+  connection: env.DATABASE_CONNECTION,
+  entities: {
+    user: User,
+    product: Product,
+  },
+}
 
-database.findOne('product')
+;(async function main() {
+  const database = await funorm.create(options)
+  const user = await database.findOne('user')
+  console.log(user)
+}())

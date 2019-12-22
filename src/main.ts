@@ -1,3 +1,5 @@
+import knex, { CreateTableBuilder, ColumnBuilder } from 'knex'
+
 // === COLUMN
 
 interface ColumnType {
@@ -34,22 +36,54 @@ type ExtractColumnType<T> =
 export type Entity<T extends EntityColumns> =
   { [K in keyof T]: ExtractColumnType<T[K]> }
 
-export const entity = <N extends string, K extends EntityColumns>(
-  name: N,
-  columns: K,
-) => <E>(db: Database<E>): Database<E & { [x in N]: K }> => ({
-  ...db,
-  entities: Object.assign(db.entities, { [name as N]: columns }),
-})
+export type EntityDefinitions =
+  { [x: string]: EntityColumns }
 
 // === DATABASE
 
-export interface Database<T> {
+export interface DatabaseOptions<T extends EntityDefinitions> {
   entities: T
-  findOne: <K extends keyof T>(entity: K) => T[K] extends EntityColumns ? Entity<T[K]> : never
+  connection: string
 }
 
-export const connect = (): Database<{}> => ({
-  entities: {},
-  findOne() {},
-})
+function getColumn(
+  table: CreateTableBuilder,
+  type: keyof ColumnType
+): (name: string) => ColumnBuilder {
+  switch (type) {
+    case 'int': return table.integer
+    case 'string': return table.string
+  }
+}
+
+function addColumns(table: CreateTableBuilder, columns: EntityColumns): void {
+  for (const [name, data] of Object.entries(columns)) {
+    const column = getColumn(table, data.type).apply(table, [name])
+    if (data.primary) column.primary()
+    if (!data.nullable) column.notNullable()
+  }
+}
+
+export const create = async <T extends EntityDefinitions>(opts: DatabaseOptions<T>) => {
+  const client = knex({
+    client: 'pg',
+    connection: opts.connection,
+  })
+
+  // sync tables
+  for (const [name, cols] of Object.entries(opts.entities)) {
+    const exists = client.schema.hasTable(name)
+    if (exists) continue
+    await client.schema.createTable(name, table => addColumns(table, cols))
+  }
+
+  return {
+    async findOne<K extends keyof T>(name: K): Promise<Entity<T[K]> | null> {
+      const res = await client
+        .select('*')
+        .from(name as string)
+        .first()
+      return res as Entity<T[K]> || null
+    },
+  }
+}

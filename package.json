@@ -10,9 +10,11 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "knex": "^0.20.4",
     "pg": "^7.15.1"
   },
   "devDependencies": {
+    "ts-node-dev": "^1.0.0-pre.44",
     "typescript": "^3.7.4"
   }
 }
