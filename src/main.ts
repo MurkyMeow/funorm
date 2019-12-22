@@ -72,7 +72,7 @@ export const create = async <T extends EntityDefinitions>(opts: DatabaseOptions<
 
   // sync tables
   for (const [name, cols] of Object.entries(opts.entities)) {
-    const exists = client.schema.hasTable(name)
+    const exists = await client.schema.hasTable(name)
     if (exists) continue
     await client.schema.createTable(name, table => addColumns(table, cols))
   }
