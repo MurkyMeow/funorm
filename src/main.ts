@@ -1,4 +1,4 @@
-import knex, { CreateTableBuilder, ColumnBuilder } from 'knex'
+import knex from 'knex'
 
 // === COLUMN
 
@@ -46,22 +46,39 @@ export interface DatabaseOptions<T extends EntityDefinitions> {
   connection: string
 }
 
-function getColumn(
-  table: CreateTableBuilder,
-  type: keyof ColumnType
-): (name: string) => ColumnBuilder {
-  switch (type) {
-    case 'int': return table.integer
-    case 'string': return table.string
+function getColAliases(colType: keyof ColumnType): string[] {
+  switch (colType) {
+    case 'int': return ['int', 'integer']
+    case 'string': return ['string', 'character varying']
+    default: return []
   }
 }
 
-function addColumns(table: CreateTableBuilder, columns: EntityColumns): void {
-  for (const [name, data] of Object.entries(columns)) {
-    const column = getColumn(table, data.type).apply(table, [name])
-    if (data.primary) column.primary()
-    if (!data.nullable) column.notNullable()
+async function validateEntity(entityName: string, cols: EntityColumns, client: knex): Promise<string[]> {
+  const exists = await client.schema.hasTable(entityName)
+  if (!exists) return [`${entityName}: table is not found`]
+
+  const errors: string[] = []
+  const builder = client(entityName)
+
+  const viewNull = (nullable?: boolean): string =>
+    nullable ? '"nullable"' : '"not nullable"'
+
+  for (const [colName, data] of Object.entries(cols)) {
+    const info = await builder.columnInfo(colName)
+    if (!info.type) {
+      errors.push(`could not find column "${colName}"`)
+      continue
+    }
+    if (!getColAliases(data.type).includes(info.type)) {
+      errors.push(`"${colName}" is defined as ${data.type} but instead saw ${info.type}`)
+    }
+    if (info.nullable !== Boolean(data.nullable)) {
+      errors.push(`"${colName}" is defined as ${viewNull(data.nullable)} but instead saw ${viewNull(info.nullable)}`)
+    }
   }
+
+  return errors.map(err => `${entityName}: ${err}`)
 }
 
 export const create = async <T extends EntityDefinitions>(opts: DatabaseOptions<T>) => {
@@ -70,11 +87,14 @@ export const create = async <T extends EntityDefinitions>(opts: DatabaseOptions<
     connection: opts.connection,
   })
 
-  // sync tables
-  for (const [name, cols] of Object.entries(opts.entities)) {
-    const exists = await client.schema.hasTable(name)
-    if (exists) continue
-    await client.schema.createTable(name, table => addColumns(table, cols))
+  const validationTasks = Object
+    .entries(opts.entities)
+    .map(([entityName, cols]) => validateEntity(entityName, cols, client))
+
+  const errors = (await Promise.all(validationTasks)).flat()
+
+  if (errors.length) {
+    throw new Error('\n FUNORM VALIDATION: \n' + errors.join('\n'))
   }
 
   return {
