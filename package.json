@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "watch": "tsc -w"
+    "watch": "ts-node-dev --no-notify src/__test__/entity.ts"
   },
   "keywords": [],
   "author": "",
