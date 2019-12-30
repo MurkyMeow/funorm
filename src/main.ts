@@ -1,4 +1,7 @@
-import knex from 'knex'
+import * as readline from 'readline'
+import knex, { CreateTableBuilder, ColumnBuilder, SchemaBuilder } from 'knex'
+
+// TODO refactor
 
 // === COLUMN
 
@@ -54,11 +57,56 @@ function getColAliases(colType: keyof ColumnType): string[] {
   }
 }
 
-async function validateEntity(entityName: string, cols: EntityColumns, client: knex): Promise<string[]> {
-  const exists = await client.schema.hasTable(entityName)
-  if (!exists) return [`${entityName}: table is not found`]
+function getColumnBuilder(
+  table: CreateTableBuilder,
+  colName: string,
+  col: Column<keyof ColumnType>,
+): ColumnBuilder {
+  switch (col.type) {
+    case 'int': return table.integer(colName)
+    case 'string': return table.string(colName)
+  }
+}
 
-  const errors: string[] = []
+function constructColumn(
+  table: CreateTableBuilder,
+  colName: string,
+  col: Column<keyof ColumnType>
+): ColumnBuilder {
+  const builder = getColumnBuilder(table, colName, col)
+  if (col.primary) builder.primary()
+  if (col.initial) builder.defaultTo(col.initial)
+  if (col.nullable) builder.nullable()
+  else builder.notNullable().defaultTo(col.initial || getDefault(col.type))
+  return builder
+}
+
+function getDefault(type: keyof ColumnType): ColumnType[keyof ColumnType] {
+  switch (type) {
+    // FIXME the type annotation is wrong, i could easily return a string here
+    case 'int': return 0
+
+    case 'string': return ''
+  }
+}
+
+interface ValidationReport {
+  msg: string
+  migration?: () => SchemaBuilder
+}
+
+async function validateEntity(
+  entityName: string,
+  cols: EntityColumns,
+  client: knex
+): Promise<ValidationReport[]> {
+  const exists = await client.schema.hasTable(entityName)
+
+  if (!exists) {
+    return [{ msg: `${entityName}: table is not found` }]
+  }
+
+  const reports: ValidationReport[] = []
   const builder = client(entityName)
 
   const viewNull = (nullable?: boolean): string =>
@@ -67,18 +115,30 @@ async function validateEntity(entityName: string, cols: EntityColumns, client: k
   for (const [colName, data] of Object.entries(cols)) {
     const info = await builder.columnInfo(colName)
     if (!info.type) {
-      errors.push(`could not find column "${colName}"`)
+      reports.push({
+        msg: `could not find column "${colName}"`,
+        migration: () => client.schema
+          .alterTable(entityName, t => constructColumn(t, colName, data)),     
+      })
       continue
     }
     if (!getColAliases(data.type).includes(info.type)) {
-      errors.push(`"${colName}" is defined as ${data.type} but instead saw ${info.type}`)
+      reports.push({
+        msg: `"${colName}" is defined as ${data.type} but instead saw ${info.type}`,
+        migration: () => client.schema
+          .alterTable(entityName, t => constructColumn(t, colName, data).alter()),
+      })
     }
     if (info.nullable !== Boolean(data.nullable)) {
-      errors.push(`"${colName}" is defined as ${viewNull(data.nullable)} but instead saw ${viewNull(info.nullable)}`)
+      reports.push({
+        msg: `"${colName}" is defined as ${viewNull(data.nullable)} but instead saw ${viewNull(info.nullable)}`,
+        migration: () => client.schema
+          .alterTable(entityName, t => constructColumn(t, colName, data).alter()),
+      })
     }
   }
 
-  return errors.map(err => `${entityName}: ${err}`)
+  return reports
 }
 
 export const create = async <T extends EntityDefinitions>(opts: DatabaseOptions<T>) => {
@@ -91,10 +151,20 @@ export const create = async <T extends EntityDefinitions>(opts: DatabaseOptions<
     .entries(opts.entities)
     .map(([entityName, cols]) => validateEntity(entityName, cols, client))
 
-  const errors = (await Promise.all(validationTasks)).flat()
+  const reports = (await Promise.all(validationTasks)).flat()
 
-  if (errors.length) {
-    throw new Error('\n FUNORM VALIDATION: \n' + errors.join('\n'))
+  if (reports.length) {
+    for (const report of reports) console.log(report.msg)
+
+    const io = readline.createInterface(process.stdin, process.stdout)
+    io.question('Do you want to run corresponding migrations? (y/N)', async answer => {
+      if (answer !== 'y') process.exit()
+      for (const report of reports) {
+        if (report.migration) await report.migration()
+      }
+      console.log('Done')
+      io.close()
+    })
   }
 
   return {
@@ -103,7 +173,7 @@ export const create = async <T extends EntityDefinitions>(opts: DatabaseOptions<
         .select('*')
         .from(name as string)
         .first()
-      return res as Entity<T[K]> || null
+      return res || null
     },
   }
 }
